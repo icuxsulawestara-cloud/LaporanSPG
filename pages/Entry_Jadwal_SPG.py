@@ -100,7 +100,12 @@ if not entries:
     st.info("Tidak ada jadwal aktif untuk diedit.")
     st.stop()
 
-weeks = sorted({entry["week"] for entry in entries}, key=lambda label: int(label.split()[-1]), reverse=True)
+# Label minggu berbentuk "Minggu ke-47"; ambil bagian setelah tanda hubung agar bisa diurutkan sebagai angka.
+weeks = sorted(
+    {entry["week"] for entry in entries},
+    key=lambda label: int(label.rsplit("-", 1)[-1]),
+    reverse=True,
+)
 selected_weeks = st.multiselect("Filter periode minggu", weeks, default=weeks, key="schedule_entry_weeks")
 visible_entries = [entry for entry in entries if entry["week"] in selected_weeks]
 st.markdown(f"**{len(visible_entries)} jadwal aktif**")
