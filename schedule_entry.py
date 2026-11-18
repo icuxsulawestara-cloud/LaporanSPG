@@ -151,6 +151,29 @@ def assignment_details(details, work_date, city, district, team):
     }
 
 
+def get_scheduled_vehicles(schedule_rows, work_date):
+    if schedule_rows is None or schedule_rows.empty:
+        return []
+
+    details = load_details()
+    vehicles = {}
+    for _, row in schedule_rows.iterrows():
+        saved = details.get(
+            assignment_key(work_date, row.get("Kota", ""), row.get("Kecamatan", "")),
+            {},
+        )
+        if not isinstance(saved, dict):
+            continue
+        assigned = saved.get("vehicle", "")
+        if not isinstance(assigned, str):
+            continue
+        assigned = assigned.strip()
+        if assigned.casefold() not in {"", "-", "nan", "none"}:
+            vehicles.setdefault(assigned.casefold(), assigned)
+
+    return sorted(vehicles.values(), key=str.casefold)
+
+
 def week_info(value):
     iso = pd.Timestamp(value).isocalendar()
     return f"Minggu ke-{iso.week} · {iso.year}", (iso.year, iso.week)
