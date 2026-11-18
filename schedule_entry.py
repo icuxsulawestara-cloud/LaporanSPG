@@ -1,6 +1,6 @@
 import json
-from io import BytesIO
 from datetime import date, timedelta
+from io import BytesIO
 import os
 
 import pandas as pd
@@ -132,38 +132,109 @@ def is_active(value):
     return str(value).strip().lower() not in {"", "-", "nan", "none"}
 
 
+def parse_schedule_date(value):
+    if pd.isna(value):
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
 def validate_schedule_upload(uploaded_file):
     try:
         uploaded_file.seek(0)
-        frame = pd.read_excel(uploaded_file)
+        raw = pd.read_excel(uploaded_file, header=None)
     except Exception as exc:
-        return None, None, None, None, f"File Excel tidak dapat dibaca: {exc}"
+        return None, None, None, None, None, f"File Excel tidak dapat dibaca: {exc}"
+    if raw.empty or len(raw.index) < 2:
+        return None, None, None, None, None, "File tidak memiliki header dan data jadwal."
 
-    frame.columns = [str(column).strip() for column in frame.columns]
-    if not len(frame.columns) or any(not column for column in frame.columns):
-        return None, None, None, None, "File harus memiliki nama kolom yang valid."
-    if len(set(frame.columns)) != len(frame.columns):
-        return None, None, None, None, "Nama kolom pada file tidak boleh duplikat."
+    header = raw.iloc[0]
+    normalized_header = {
+        index: str(value).strip().casefold()
+        for index, value in header.items()
+        if not pd.isna(value)
+    }
+    city_index = next((i for i, value in normalized_header.items() if "kota" in value), None)
+    district_index = next((i for i, value in normalized_header.items() if "kecamatan" in value), None)
+    if city_index is None or district_index is None or city_index == district_index:
+        return None, None, None, None, None, "File harus memiliki kolom Kota dan Kecamatan."
 
-    city_col = next((col for col in frame.columns if "kota" in col.lower()), None)
-    district_col = next((col for col in frame.columns if "kecamatan" in col.lower()), None)
-    if not city_col or not district_col or city_col == district_col:
-        return None, None, None, None, "File harus memiliki kolom Kota dan Kecamatan."
+    subheader = raw.iloc[1]
+    subheader_labels = {
+        index: str(value).strip().casefold()
+        for index, value in subheader.items()
+        if not pd.isna(value)
+    }
+    team_indexes = {}
+    vehicle_indexes = {}
+    for index, value in header.items():
+        work_date = parse_schedule_date(value)
+        if work_date is None:
+            continue
+        date_key = date_column(work_date)
+        label = subheader_labels.get(index, "")
+        if "kendaraan" in label or "plat" in label:
+            return None, None, None, None, None, "Kolom tanggal harus berada di atas kolom Nama Team."
+        team_index = index
+        vehicle_index = None
+        if "nama team" in label:
+            vehicle_label = subheader_labels.get(index + 1, "")
+            if "kendaraan" in vehicle_label or "plat" in vehicle_label:
+                vehicle_index = index + 1
+        if date_key in team_indexes:
+            return None, None, None, None, None, f"Tanggal {date_key[:10]} muncul lebih dari sekali."
+        team_indexes[date_key] = team_index
+        if vehicle_index is not None:
+            vehicle_indexes[date_key] = vehicle_index
 
-    date_cols = [col for col in frame.columns if col not in {city_col, district_col}]
-    if not date_cols:
-        return None, None, None, None, "File harus memiliki minimal satu kolom tanggal jadwal."
-
-    normalized_dates = []
-    for column in date_cols:
-        parsed_date = pd.to_datetime(column, errors="coerce")
-        if pd.isna(parsed_date):
-            return None, None, None, None, f"Kolom '{column}' bukan tanggal yang valid."
-        normalized_dates.append(parsed_date.date())
-    if len(set(normalized_dates)) != len(normalized_dates):
-        return None, None, None, None, "File memiliki beberapa kolom untuk tanggal yang sama."
-    if frame.empty:
-        return None, None, None, None, "File tidak berisi data jadwal."
+    has_team_subheaders = any("nama team" in label for label in subheader_labels.values())
+    if not team_indexes or not has_team_subheaders:
+        uploaded_file.seek(0)
+        try:
+            frame = pd.read_excel(uploaded_file)
+        except Exception as exc:
+            return None, None, None, None, None, f"File Excel tidak dapat dibaca: {exc}"
+        frame.columns = [str(column).strip() for column in frame.columns]
+        if not len(frame.columns) or any(not column for column in frame.columns):
+            return None, None, None, None, None, "File harus memiliki nama kolom yang valid."
+        if len(set(frame.columns)) != len(frame.columns):
+            return None, None, None, None, None, "Nama kolom pada file tidak boleh duplikat."
+        city_col = next((col for col in frame.columns if "kota" in col.lower()), None)
+        district_col = next((col for col in frame.columns if "kecamatan" in col.lower()), None)
+        date_cols = [col for col in frame.columns if col not in {city_col, district_col}]
+        if not city_col or not district_col or city_col == district_col:
+            return None, None, None, None, None, "File harus memiliki kolom Kota dan Kecamatan."
+        team_indexes = {}
+        for col in date_cols:
+            work_date = parse_schedule_date(col)
+            if work_date is None:
+                return None, None, None, None, None, f"Kolom '{col}' bukan tanggal yang valid."
+            date_key = date_column(work_date)
+            if date_key in team_indexes:
+                return None, None, None, None, None, f"Tanggal {date_key[:10]} muncul lebih dari sekali."
+            team_indexes[date_key] = col
+        frame = frame.rename(columns={column: key for key, column in team_indexes.items()})
+        raw = frame
+        date_cols = [date_key for date_key in team_indexes]
+        raw_city_col, raw_district_col = city_col, district_col
+        multi_header = False
+    else:
+        city_col, district_col = "Kota", "Kecamatan"
+        date_cols = list(team_indexes)
+        raw_city_col, raw_district_col = city_index, district_index
+        multi_header = True
+        rows = []
+        for _, source_row in raw.iloc[2:].iterrows():
+            row = {
+                city_col: source_row.get(raw_city_col),
+                district_col: source_row.get(raw_district_col),
+            }
+            for date_key, team_index in team_indexes.items():
+                row[date_key] = source_row.get(team_index)
+            rows.append(row)
+        frame = pd.DataFrame(rows, columns=[city_col, district_col, *date_cols])
 
     seen_locations = set()
     for _, row in frame.iterrows():
@@ -175,13 +246,29 @@ def validate_schedule_upload(uploaded_file):
         if not city or city.casefold() in {"nan", "none"} or not district or district.casefold() in {"nan", "none"}:
             if not has_assignment:
                 continue
-            return None, None, None, None, "Setiap baris jadwal aktif harus memiliki Kota dan Kecamatan."
+            return None, None, None, None, None, "Setiap baris jadwal aktif harus memiliki Kota dan Kecamatan."
         location = (city.casefold(), district.casefold())
         if location in seen_locations:
-            return None, None, None, None, f"Lokasi {city} / {district} muncul lebih dari sekali."
+            return None, None, None, None, None, f"Lokasi {city} / {district} muncul lebih dari sekali."
         seen_locations.add(location)
 
-    return frame, city_col, district_col, date_cols, None
+    uploaded_vehicles = {}
+    if multi_header:
+        for _, source_row in raw.iloc[2:].iterrows():
+            city = str(source_row.get(raw_city_col, "")).strip()
+            district = str(source_row.get(raw_district_col, "")).strip()
+            if not city or not district or city.casefold() == "nan" or district.casefold() == "nan":
+                continue
+            for date_key, team_index in team_indexes.items():
+                if not is_active(source_row.get(team_index)):
+                    continue
+                vehicle_index = vehicle_indexes.get(date_key)
+                vehicle = source_row.get(vehicle_index) if vehicle_index is not None else ""
+                uploaded_vehicles[assignment_key(parse_schedule_date(date_key), city, district)] = (
+                    "" if pd.isna(vehicle) else str(vehicle).strip()
+                )
+
+    return frame, city_col, district_col, date_cols, uploaded_vehicles, None
 
 
 def retain_matching_schedule_details(details, frame, city_col, district_col, date_cols):
@@ -209,6 +296,38 @@ def retain_matching_schedule_details(details, frame, city_col, district_col, dat
             continue
         retained[key] = saved
     return retained
+
+
+def build_schedule_excel(schedule, details, city_col, district_col):
+    date_cols = [
+        column
+        for column in schedule.columns
+        if column not in {city_col, district_col} and parse_schedule_date(column) is not None
+    ]
+    header = [city_col, district_col]
+    subheader = [None, None]
+    normalized_date_cols = []
+    for column in date_cols:
+        work_date = parse_schedule_date(column)
+        normalized_date_cols.append((column, work_date))
+        header.extend([work_date, None])
+        subheader.extend(["Nama Team", "Kendaraan / Plat Nomor"])
+
+    rows = [header, subheader]
+    for _, source_row in schedule.iterrows():
+        city = source_row.get(city_col, "")
+        district = source_row.get(district_col, "")
+        row = [city, district]
+        for column, work_date in normalized_date_cols:
+            row.append(source_row.get(column, ""))
+            saved = details.get(assignment_key(work_date, city, district), {})
+            vehicle = saved.get("vehicle", "") if isinstance(saved, dict) else ""
+            row.append(vehicle)
+        rows.append(row)
+
+    buffer = BytesIO()
+    pd.DataFrame(rows).to_excel(buffer, index=False, header=False)
+    return buffer.getvalue()
 
 
 def date_column(value):
@@ -322,7 +441,7 @@ def render_schedule_entry():
     teams = team_choices()
     vehicles = vehicle_choices()
 
-    # Three entry modes share master team, team-brand allocation and vehicle master.
+    # Scheduling, management, and Excel import/export share the same schedule data.
     tab_day, tab_week, tab_manage, tab_excel = st.tabs(
         [
             "➕ Tambah Hari Kerja",
@@ -557,11 +676,9 @@ def render_schedule_entry():
             "Detail kendaraan/brand dipertahankan untuk penugasan yang tetap sama."
         )
 
-        excel_buffer = BytesIO()
-        schedule.to_excel(excel_buffer, index=False)
         st.download_button(
             "⬇️ Download Jadwal SPG.xlsx",
-            data=excel_buffer.getvalue(),
+            data=build_schedule_excel(schedule, details, city_col, district_col),
             file_name="Jadwal SPG.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
@@ -573,9 +690,14 @@ def render_schedule_entry():
             key="upload_schedule_excel",
         )
         if uploaded_file is not None:
-            upload_frame, upload_city_col, upload_district_col, upload_date_cols, upload_error = (
-                validate_schedule_upload(uploaded_file)
-            )
+            (
+                upload_frame,
+                upload_city_col,
+                upload_district_col,
+                upload_date_cols,
+                uploaded_vehicles,
+                upload_error,
+            ) = validate_schedule_upload(uploaded_file)
             if upload_error:
                 st.error(upload_error)
             else:
@@ -594,6 +716,26 @@ def render_schedule_entry():
                         upload_district_col,
                         upload_date_cols,
                     )
+                    if uploaded_vehicles:
+                        for _, row in upload_frame.iterrows():
+                            city = str(row.get(upload_city_col, "")).strip()
+                            district = str(row.get(upload_district_col, "")).strip()
+                            if not city or not district:
+                                continue
+                            for date_col in upload_date_cols:
+                                team = row.get(date_col)
+                                if not is_active(team):
+                                    continue
+                                work_date = parse_schedule_date(date_col)
+                                key = assignment_key(work_date, city, district)
+                                if key not in uploaded_vehicles:
+                                    continue
+                                saved = updated_details.get(key, {})
+                                saved = saved.copy() if isinstance(saved, dict) else {}
+                                saved["team"] = str(team).strip()
+                                saved["vehicle"] = uploaded_vehicles[key]
+                                saved.setdefault("brands", [])
+                                updated_details[key] = saved
                     if save_schedule(upload_frame):
                         if save_details(updated_details):
                             st.success("Jadwal berhasil diperbarui dari file Excel.")
