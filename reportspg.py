@@ -9,7 +9,7 @@ from shapely.geometry import Point
 import streamlit as st
 from streamlit_js_eval import get_geolocation
 
-from schedule_entry import render_schedule_entry
+from schedule_entry import get_scheduled_vehicles, render_schedule_entry
 
 # ====================================================
 # KONFIGURASI HALAMAN STREAMLIT
@@ -1752,24 +1752,27 @@ if not st.session_state["logged_in"]:
                 on_change=reset_session_on_user_change,
             )
 
-            pilihan_plat_supervisi = ""
-            if st.session_state["login_mode"] == "Supervisi":
-                daftar_plat_master = load_master_plat_kendaraan()
-                if not daftar_plat_master:
-                    daftar_plat_master = ["L 1234 ABC", "L 1235 BCD"]
-                pilihan_plat_supervisi = st.selectbox(
-                    "🚗 Pilih Plat Nomor Kendaraan Operasional",
-                    daftar_plat_master,
-                    key="selected_plat_supervisi_login",
-                )
-
-            schedule_ok, schedule_warning_msg, auto_detected_kota, auto_kecamatan_list, _ = get_schedule_info_for_team(pilihan_user)
+            schedule_ok, schedule_warning_msg, auto_detected_kota, auto_kecamatan_list, matched_schedule_rows = get_schedule_info_for_team(pilihan_user)
+            scheduled_vehicles = []
+            if schedule_ok and st.session_state["login_mode"] == "Supervisi":
+                today_wib = (datetime.utcnow() + timedelta(hours=7)).date()
+                scheduled_vehicles = get_scheduled_vehicles(matched_schedule_rows, today_wib)
 
             if not schedule_ok:
                 st.error("⚠️ **Tidak Ada Jadwal Team Tersebut Untuk Hari Ini**")
             else:
                 st.info(f"🏙️ Wilayah Terdeteksi dari Jadwal Hari Ini: **{auto_detected_kota}**")
                 st.caption(f"📌 Kecamatan yang diijinkan hari ini: {', '.join(auto_kecamatan_list) if auto_kecamatan_list else '-'}")
+                if st.session_state["login_mode"] == "Supervisi":
+                    if len(scheduled_vehicles) == 1:
+                        st.info(f"🚗 Plat kendaraan otomatis sesuai jadwal: **{scheduled_vehicles[0]}**")
+                    elif not scheduled_vehicles:
+                        st.warning("Plat kendaraan belum diatur pada jadwal team hari ini. Lengkapi plat di menu Entry & Monitoring Jadwal SPG.")
+                    else:
+                        st.error(
+                            "Jadwal team hari ini memiliki lebih dari satu plat kendaraan "
+                            f"({', '.join(scheduled_vehicles)}). Samakan plat pada jadwal sebelum login Supervisi."
+                        )
 
             st.markdown("")
             btn_login = st.button(f"Masuk Aplikasi ({st.session_state['login_mode']})", type="primary", use_container_width=True)
@@ -1777,10 +1780,12 @@ if not st.session_state["logged_in"]:
             if btn_login:
                 if not schedule_ok:
                     st.error("❌ Akses ditolak: Tidak Ada Jadwal Team Tersebut Untuk Hari Ini.")
+                elif st.session_state["login_mode"] == "Supervisi" and len(scheduled_vehicles) != 1:
+                    st.error("❌ Akses Supervisi ditolak: plat kendaraan pada jadwal belum tersedia atau tidak konsisten.")
                 else:
                     st.session_state["logged_in"] = True
                     st.session_state["user_spg"] = pilihan_user
-                    st.session_state["plat_mobil"] = pilihan_plat_supervisi if st.session_state["login_mode"] == "Supervisi" else "-"
+                    st.session_state["plat_mobil"] = scheduled_vehicles[0] if st.session_state["login_mode"] == "Supervisi" else "-"
                     st.session_state["kota_kab"] = auto_detected_kota
                     st.rerun()
 
