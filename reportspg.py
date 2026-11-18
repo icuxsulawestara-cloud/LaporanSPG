@@ -217,17 +217,15 @@ def df_to_sheet_rows(df: pd.DataFrame):
         return []
     df_clean = df.copy()
     
-    # Konversi semua kolom bertipe datetime standar
-    for col in df_clean.select_dtypes(include=["datetime64[ns]", "datetimetz", "datetime"]).columns:
-        df_clean[col] = df_clean[col].dt.strftime("%Y-%m-%d %H:%M:%S")
-        
-    # Konversi objek datetime tersembunyi di dalam kolom bertipe data lain
+    # Ganti semua nilai NaN, NaT, atau None dengan string kosong ""
+    df_clean = df_clean.where(pd.notnull(df_clean), "")
+    
+    # Konversi semua kolom bertipe datetime standar atau objek datetime tersembunyi
     for col in df_clean.columns:
         df_clean[col] = df_clean[col].apply(
-            lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if isinstance(x, (datetime, pd.Timestamp)) else x
+            lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if isinstance(x, (datetime, pd.Timestamp)) else str(x) if x != "" else ""
         )
         
-    df_clean = df_clean.fillna("").astype(str)
     return [df_clean.columns.tolist()] + df_clean.values.tolist()
 
 # ====================================================
