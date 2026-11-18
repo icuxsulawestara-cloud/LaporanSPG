@@ -167,7 +167,7 @@ st.markdown(
 # ====================================================
 # DEFINISI FILE DATABASE LOKAL & KONFIGURASI GOOGLE SHEET
 # ====================================================
-WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzO7m2REUAfbPPtuY-w-TJwMCpWzK_CRKKdBuK7TxquRKG8kcJ_hQEru6DeL_4ymzw/exec"
+WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzk6tqiNonaArNjJt7X0IIhja_D7elgGLkNPE90xmDtvdHwNeq4VhZJQfUU2OE_jiA/exec"
 
 DB_FILE = "rekap_laporan_spg.csv"
 DB_SUPERVISI_KONTAK_FILE = "rekap_kontak_supervisi.csv"
