@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from io import BytesIO
 import json
+import requests
 import os
 import geopandas as gpd
 import pandas as pd
@@ -162,6 +163,51 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzO7m2REUAfbPPtuY-w-TJwMCpWzK_CRKKdBuK7TxquRKG8kcJ_hQEru6DeL_4ymzw/exec"
+
+with st.sidebar:
+    st.divider()
+    with st.expander("☁️ Backup & Load Google Sheet", expanded=False):
+        st.caption("✅ Sinkronisasi database ke Google Spreadsheet.")
+        
+        btn_backup_gs = st.button("⬆️ Backup ke Sheet", use_container_width=True)
+        btn_load_gs = st.button("⬇️ Load dari Sheet", use_container_width=True)
+
+        if btn_backup_gs:
+            try:
+                with st.spinner("Mem-backup data..."):
+                    # Ambil dataframe jadwal atau laporan yang aktif di session state
+                    df_jdw = st.session_state.get("df_jadwal", pd.DataFrame())
+                    df_wrk = st.session_state.get("df_warkop", pd.DataFrame())
+                    
+                    payload = {
+                        "action": "backup",
+                        "jadwal_spg": [df_jdw.columns.tolist()] + df_jdw.astype(str).values.tolist() if not df_jdw.empty else [],
+                        "master_warkop": [df_wrk.columns.tolist()] + df_wrk.astype(str).values.tolist() if not df_wrk.empty else []
+                    }
+                    response = requests.post(WEB_APP_URL, json=payload, timeout=30)
+                    res_json = response.json()
+                    
+                    if res_json.get("status") == "success":
+                        st.success("✅ " + res_json.get("message", "Backup berhasil!"))
+                    else:
+                        st.error("❌ " + res_json.get("message", "Gagal backup."))
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+        if btn_load_gs:
+            try:
+                with st.spinner("Memuat data dari Sheet..."):
+                    response = requests.post(WEB_APP_URL, json={"action": "load"}, timeout=30)
+                    res_json = response.json()
+                    if res_json.get("status") == "success":
+                        st.success("✅ Data berhasil dimuat dari Google Sheet!")
+                        st.rerun()
+                    else:
+                        st.error("❌ " + res_json.get("message", "Gagal load."))
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 # File database lokal & master
 DB_FILE = "rekap_laporan_spg.csv"
