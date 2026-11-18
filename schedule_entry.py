@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from datetime import date, timedelta
 import os
 
@@ -131,6 +132,85 @@ def is_active(value):
     return str(value).strip().lower() not in {"", "-", "nan", "none"}
 
 
+def validate_schedule_upload(uploaded_file):
+    try:
+        uploaded_file.seek(0)
+        frame = pd.read_excel(uploaded_file)
+    except Exception as exc:
+        return None, None, None, None, f"File Excel tidak dapat dibaca: {exc}"
+
+    frame.columns = [str(column).strip() for column in frame.columns]
+    if not len(frame.columns) or any(not column for column in frame.columns):
+        return None, None, None, None, "File harus memiliki nama kolom yang valid."
+    if len(set(frame.columns)) != len(frame.columns):
+        return None, None, None, None, "Nama kolom pada file tidak boleh duplikat."
+
+    city_col = next((col for col in frame.columns if "kota" in col.lower()), None)
+    district_col = next((col for col in frame.columns if "kecamatan" in col.lower()), None)
+    if not city_col or not district_col or city_col == district_col:
+        return None, None, None, None, "File harus memiliki kolom Kota dan Kecamatan."
+
+    date_cols = [col for col in frame.columns if col not in {city_col, district_col}]
+    if not date_cols:
+        return None, None, None, None, "File harus memiliki minimal satu kolom tanggal jadwal."
+
+    normalized_dates = []
+    for column in date_cols:
+        parsed_date = pd.to_datetime(column, errors="coerce")
+        if pd.isna(parsed_date):
+            return None, None, None, None, f"Kolom '{column}' bukan tanggal yang valid."
+        normalized_dates.append(parsed_date.date())
+    if len(set(normalized_dates)) != len(normalized_dates):
+        return None, None, None, None, "File memiliki beberapa kolom untuk tanggal yang sama."
+    if frame.empty:
+        return None, None, None, None, "File tidak berisi data jadwal."
+
+    seen_locations = set()
+    for _, row in frame.iterrows():
+        has_assignment = any(is_active(row.get(column)) for column in date_cols)
+        city = str(row.get(city_col, "")).strip()
+        district = str(row.get(district_col, "")).strip()
+        if not has_assignment and not city and not district:
+            continue
+        if not city or city.casefold() in {"nan", "none"} or not district or district.casefold() in {"nan", "none"}:
+            if not has_assignment:
+                continue
+            return None, None, None, None, "Setiap baris jadwal aktif harus memiliki Kota dan Kecamatan."
+        location = (city.casefold(), district.casefold())
+        if location in seen_locations:
+            return None, None, None, None, f"Lokasi {city} / {district} muncul lebih dari sekali."
+        seen_locations.add(location)
+
+    return frame, city_col, district_col, date_cols, None
+
+
+def retain_matching_schedule_details(details, frame, city_col, district_col, date_cols):
+    assignments = {}
+    for _, row in frame.iterrows():
+        city = str(row.get(city_col, "")).strip()
+        district = str(row.get(district_col, "")).strip()
+        if not city or not district:
+            continue
+        for date_col in date_cols:
+            team = row.get(date_col)
+            if not is_active(team):
+                continue
+            work_date = pd.to_datetime(date_col, errors="coerce")
+            if not pd.isna(work_date):
+                assignments[assignment_key(work_date.date(), city, district)] = str(team).strip()
+
+    retained = {}
+    for key, saved in details.items():
+        team = assignments.get(key)
+        if team is None:
+            continue
+        saved_team = saved.get("team") if isinstance(saved, dict) else None
+        if saved_team and str(saved_team).strip().casefold() != team.casefold():
+            continue
+        retained[key] = saved
+    return retained
+
+
 def date_column(value):
     return pd.Timestamp(value).strftime("%Y-%m-%d 00:00:00")
 
@@ -243,7 +323,14 @@ def render_schedule_entry():
     vehicles = vehicle_choices()
 
     # Three entry modes share master team, team-brand allocation and vehicle master.
-    tab_day, tab_week, tab_manage = st.tabs(["➕ Tambah Hari Kerja", "🗓️ Tambah Minggu Kerja", "✏️ Kelola Jadwal Aktif"])
+    tab_day, tab_week, tab_manage, tab_excel = st.tabs(
+        [
+            "➕ Tambah Hari Kerja",
+            "🗓️ Tambah Minggu Kerja",
+            "✏️ Kelola Jadwal Aktif",
+            "📥 Download / Upload Excel",
+        ]
+    )
 
     with tab_day:
         st.markdown("#### Buat jadwal untuk satu hari")
@@ -461,3 +548,57 @@ def render_schedule_entry():
 
     if st.button("🔄 Muat Ulang Jadwal", key="reload_schedule"):
         st.rerun()
+
+    with tab_excel:
+        st.markdown("#### Unduh dan unggah jadwal melalui Excel")
+        st.caption(
+            "File menggunakan format jadwal aktif: kolom Kota, Kecamatan, lalu kolom tanggal. "
+            "Unggah akan mengganti seluruh jadwal aktif setelah Anda memeriksa pratinjau. "
+            "Detail kendaraan/brand dipertahankan untuk penugasan yang tetap sama."
+        )
+
+        excel_buffer = BytesIO()
+        schedule.to_excel(excel_buffer, index=False)
+        st.download_button(
+            "⬇️ Download Jadwal SPG.xlsx",
+            data=excel_buffer.getvalue(),
+            file_name="Jadwal SPG.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+        uploaded_file = st.file_uploader(
+            "Pilih file Excel jadwal untuk diunggah",
+            type=["xlsx"],
+            key="upload_schedule_excel",
+        )
+        if uploaded_file is not None:
+            upload_frame, upload_city_col, upload_district_col, upload_date_cols, upload_error = (
+                validate_schedule_upload(uploaded_file)
+            )
+            if upload_error:
+                st.error(upload_error)
+            else:
+                st.markdown("##### Pratinjau jadwal yang akan diunggah")
+                st.dataframe(upload_frame, use_container_width=True, hide_index=True)
+                st.warning("Tindakan ini mengganti seluruh jadwal aktif dengan isi file di atas.")
+                if st.button(
+                    "Ganti Jadwal Aktif dengan File Excel Ini",
+                    type="primary",
+                    key="confirm_schedule_excel_upload",
+                ):
+                    updated_details = retain_matching_schedule_details(
+                        load_details(),
+                        upload_frame,
+                        upload_city_col,
+                        upload_district_col,
+                        upload_date_cols,
+                    )
+                    if save_schedule(upload_frame):
+                        if save_details(updated_details):
+                            st.success("Jadwal berhasil diperbarui dari file Excel.")
+                            st.rerun()
+                        st.error(
+                            "Jadwal berhasil diperbarui, tetapi sinkronisasi detail kendaraan/brand gagal. "
+                            "Periksa kembali detail jadwal."
+                        )
