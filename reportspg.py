@@ -212,14 +212,21 @@ EXPECTED_SUPERVISI_COLUMNS = [
     "Jumlah_Kontak_Manual",
 ]
 
-# Fungsi helper konversi dataframe untuk sinkronisasi Google Sheet (Aman dari tipe datetime)
 def df_to_sheet_rows(df: pd.DataFrame):
     if df is None or df.empty:
         return []
     df_clean = df.copy()
-    # Ubah semua kolom bertipe datetime menjadi string agar JSON serializable
+    
+    # Konversi semua kolom bertipe datetime standar
     for col in df_clean.select_dtypes(include=["datetime64[ns]", "datetimetz", "datetime"]).columns:
         df_clean[col] = df_clean[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+        
+    # Konversi objek datetime tersembunyi di dalam kolom bertipe data lain
+    for col in df_clean.columns:
+        df_clean[col] = df_clean[col].apply(
+            lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if isinstance(x, (datetime, pd.Timestamp)) else x
+        )
+        
     df_clean = df_clean.fillna("").astype(str)
     return [df_clean.columns.tolist()] + df_clean.values.tolist()
 
