@@ -330,6 +330,36 @@ def build_schedule_excel(schedule, details, city_col, district_col):
     return buffer.getvalue()
 
 
+def build_schedule_preview(frame, details, city_col, district_col, date_cols, uploaded_vehicles):
+    preview_rows = []
+    preview_columns = [city_col, district_col]
+    for date_col in date_cols:
+        work_date = parse_schedule_date(date_col)
+        date_label = work_date.strftime("%Y-%m-%d") if work_date else str(date_col)
+        preview_columns.extend(
+            [f"{date_label} - Nama Team", f"{date_label} - Kendaraan / Plat Nomor"]
+        )
+
+    for _, source_row in frame.iterrows():
+        city = source_row.get(city_col, "")
+        district = source_row.get(district_col, "")
+        preview_row = {city_col: city, district_col: district}
+        for date_col in date_cols:
+            work_date = parse_schedule_date(date_col)
+            team = source_row.get(date_col, "")
+            key = assignment_key(work_date, city, district) if work_date else None
+            saved = details.get(key, {}) if key else {}
+            vehicle = uploaded_vehicles.get(key) if key in uploaded_vehicles else (
+                saved.get("vehicle", "") if isinstance(saved, dict) else ""
+            )
+            date_label = work_date.strftime("%Y-%m-%d") if work_date else str(date_col)
+            preview_row[f"{date_label} - Nama Team"] = team
+            preview_row[f"{date_label} - Kendaraan / Plat Nomor"] = vehicle
+        preview_rows.append(preview_row)
+
+    return pd.DataFrame(preview_rows, columns=preview_columns)
+
+
 def date_column(value):
     return pd.Timestamp(value).strftime("%Y-%m-%d 00:00:00")
 
@@ -574,7 +604,11 @@ def render_schedule_entry():
 
             for entry in visible_entries:
                 entry_id = f"{entry['row']}_{entry['date_col']}"
-                heading = f"{entry['date'].strftime('%d-%m-%Y')} · {entry['district'] or 'Kecamatan belum diisi'} · {entry['team']}"
+                heading = (
+                    f"{entry['date'].strftime('%d-%m-%Y')} · "
+                    f"{entry['district'] or 'Kecamatan belum diisi'} · {entry['team']} · "
+                    f"Plat: {entry['vehicle'] or 'Belum diatur'}"
+                )
                 with st.expander(f"📍 {heading}", expanded=False):
                     brands_allowed = brands_for_team(entry["team"])
                     default_brands = [brand for brand in entry["brands"] if brand in brands_allowed]
@@ -702,7 +736,18 @@ def render_schedule_entry():
                 st.error(upload_error)
             else:
                 st.markdown("##### Pratinjau jadwal yang akan diunggah")
-                st.dataframe(upload_frame, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    build_schedule_preview(
+                        upload_frame,
+                        load_details(),
+                        upload_city_col,
+                        upload_district_col,
+                        upload_date_cols,
+                        uploaded_vehicles,
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
                 st.warning("Tindakan ini mengganti seluruh jadwal aktif dengan isi file di atas.")
                 if st.button(
                     "Ganti Jadwal Aktif dengan File Excel Ini",
