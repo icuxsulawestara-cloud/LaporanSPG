@@ -164,52 +164,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ====================================================
+# DEFINISI FILE DATABASE LOKAL & KONFIGURASI GOOGLE SHEET
+# ====================================================
 WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzO7m2REUAfbPPtuY-w-TJwMCpWzK_CRKKdBuK7TxquRKG8kcJ_hQEru6DeL_4ymzw/exec"
 
-with st.sidebar:
-    st.divider()
-    with st.expander("☁️ Backup & Load Google Sheet", expanded=False):
-        st.caption("✅ Sinkronisasi database ke Google Spreadsheet.")
-        
-        btn_backup_gs = st.button("⬆️ Backup ke Sheet", use_container_width=True)
-        btn_load_gs = st.button("⬇️ Load dari Sheet", use_container_width=True)
-
-        if btn_backup_gs:
-            try:
-                with st.spinner("Mem-backup data..."):
-                    # Ambil dataframe jadwal atau laporan yang aktif di session state
-                    df_jdw = st.session_state.get("df_jadwal", pd.DataFrame())
-                    df_wrk = st.session_state.get("df_warkop", pd.DataFrame())
-                    
-                    payload = {
-                        "action": "backup",
-                        "jadwal_spg": [df_jdw.columns.tolist()] + df_jdw.astype(str).values.tolist() if not df_jdw.empty else [],
-                        "master_warkop": [df_wrk.columns.tolist()] + df_wrk.astype(str).values.tolist() if not df_wrk.empty else []
-                    }
-                    response = requests.post(WEB_APP_URL, json=payload, timeout=30)
-                    res_json = response.json()
-                    
-                    if res_json.get("status") == "success":
-                        st.success("✅ " + res_json.get("message", "Backup berhasil!"))
-                    else:
-                        st.error("❌ " + res_json.get("message", "Gagal backup."))
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-        if btn_load_gs:
-            try:
-                with st.spinner("Memuat data dari Sheet..."):
-                    response = requests.post(WEB_APP_URL, json={"action": "load"}, timeout=30)
-                    res_json = response.json()
-                    if res_json.get("status") == "success":
-                        st.success("✅ Data berhasil dimuat dari Google Sheet!")
-                        st.rerun()
-                    else:
-                        st.error("❌ " + res_json.get("message", "Gagal load."))
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# File database lokal & master
 DB_FILE = "rekap_laporan_spg.csv"
 DB_SUPERVISI_KONTAK_FILE = "rekap_kontak_supervisi.csv"
 MASTER_BRAND_FILE = "master_brand_rokok.json"
@@ -253,6 +212,84 @@ EXPECTED_SUPERVISI_COLUMNS = [
     "Jumlah_Kontak_Manual",
 ]
 
+# Fungsi helper konversi dataframe untuk sinkronisasi Google Sheet
+def df_to_sheet_rows(df: pd.DataFrame):
+    if df is None or df.empty:
+        return []
+    df_clean = df.fillna("").astype(str)
+    return [df_clean.columns.tolist()] + df_clean.values.tolist()
+
+def sheet_rows_to_df(rows: list, fallback_cols=None):
+    if not rows or len(rows) < 2:
+        return pd.DataFrame(columns=fallback_cols if fallback_cols else [])
+    return pd.DataFrame(rows[1:], columns=rows[0])
+
+# ====================================================
+# SIDEBAR: BACKUP & LOAD GOOGLE SHEET
+# ====================================================
+with st.sidebar:
+    st.divider()
+    with st.expander("☁️ Backup & Load Google Sheet", expanded=False):
+        st.caption("✅ Sinkronisasi database ke Google Spreadsheet.")
+        
+        btn_backup_gs = st.button("⬆️ Backup ke Sheet", use_container_width=True)
+        btn_load_gs = st.button("⬇️ Load dari Sheet", use_container_width=True)
+
+        if btn_backup_gs:
+            try:
+                with st.spinner("Mem-backup data ke Google Sheet..."):
+                    df_rekap = pd.read_csv(DB_FILE) if os.path.exists(DB_FILE) else pd.DataFrame(columns=EXPECTED_COLUMNS)
+                    df_sup = pd.read_csv(DB_SUPERVISI_KONTAK_FILE) if os.path.exists(DB_SUPERVISI_KONTAK_FILE) else pd.DataFrame(columns=EXPECTED_SUPERVISI_COLUMNS)
+                    df_jdw = pd.read_excel(JADWAL_SPG_FILE) if os.path.exists(JADWAL_SPG_FILE) else pd.DataFrame()
+                    df_wrk = pd.read_excel(MASTER_LOKASI_FILE) if os.path.exists(MASTER_LOKASI_FILE) else pd.DataFrame()
+                    
+                    payload = {
+                        "action": "backup",
+                        "rekap_laporan": df_to_sheet_rows(df_rekap),
+                        "rekap_supervisi": df_to_sheet_rows(df_sup),
+                        "jadwal_spg": df_to_sheet_rows(df_jdw),
+                        "master_warkop": df_to_sheet_rows(df_wrk),
+                    }
+                    
+                    response = requests.post(WEB_APP_URL, json=payload, timeout=30)
+                    if "application/json" not in response.headers.get("Content-Type", ""):
+                        st.error("❌ Respons bukan JSON. Pastikan di Apps Script: Deploy > Manage deployments > Who has access = 'Anyone' & deploy versi baru.")
+                    else:
+                        res_json = response.json()
+                        if res_json.get("status") == "success":
+                            st.success("✅ " + res_json.get("message", "Backup berhasil!"))
+                        else:
+                            st.error("❌ " + res_json.get("message", "Gagal backup."))
+            except Exception as e:
+                st.error(f"Error backup: {e}")
+
+        if btn_load_gs:
+            try:
+                with st.spinner("Memuat data dari Google Sheet..."):
+                    response = requests.post(WEB_APP_URL, json={"action": "load"}, timeout=30)
+                    if "application/json" not in response.headers.get("Content-Type", ""):
+                        st.error("❌ Respons bukan JSON. Cek izin akses Web App ('Anyone') di Apps Script.")
+                    else:
+                        res_json = response.json()
+                        if res_json.get("status") == "success":
+                            data_gs = res_json.get("data", {})
+                            
+                            if "rekap_laporan" in data_gs and len(data_gs["rekap_laporan"]) > 0:
+                                sheet_rows_to_df(data_gs["rekap_laporan"], EXPECTED_COLUMNS).to_csv(DB_FILE, index=False)
+                            if "rekap_supervisi" in data_gs and len(data_gs["rekap_supervisi"]) > 0:
+                                sheet_rows_to_df(data_gs["rekap_supervisi"], EXPECTED_SUPERVISI_COLUMNS).to_csv(DB_SUPERVISI_KONTAK_FILE, index=False)
+                            if "jadwal_spg" in data_gs and len(data_gs["jadwal_spg"]) > 0:
+                                sheet_rows_to_df(data_gs["jadwal_spg"]).to_excel(JADWAL_SPG_FILE, index=False)
+                            if "master_warkop" in data_gs and len(data_gs["master_warkop"]) > 0:
+                                sheet_rows_to_df(data_gs["master_warkop"]).to_excel(MASTER_LOKASI_FILE, index=False)
+                                
+                            st.cache_data.clear()
+                            st.success("✅ Data berhasil dimuat dari Google Sheet!")
+                            st.rerun()
+                        else:
+                            st.error("❌ " + res_json.get("message", "Gagal load."))
+            except Exception as e:
+                st.error(f"Error load: {e}")
 # ====================================================
 # FUNGSI BANTUAN UMUM
 # ====================================================
